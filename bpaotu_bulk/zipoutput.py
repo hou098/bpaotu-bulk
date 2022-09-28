@@ -1,20 +1,16 @@
 import jinja2
-import ckan.lib.helpers as h
 import sys
 import datetime
 import codecs
 import csv
 import bitmath
 from collections import defaultdict
-from ckan.plugins.toolkit import config
 from urllib.parse import urlparse
 from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
-from flask import make_response
 from io import BytesIO, TextIOWrapper
 from .bash import SH_TEMPLATE
 from .powershell import POWERSHELL_TEMPLATE
 from .python import PY_TEMPLATE
-from ckanext.scheming.helpers import scheming_get_dataset_schema
 
 BULK_EXPLANATORY_NOTE = """\
 CKAN Bulk Download
@@ -139,7 +135,7 @@ def str_crlf(s):
 
 
 def get_timestamp():
-    return datetime.datetime.now(h.get_display_timezone()).strftime(
+    return datetime.datetime.now().strftime(
         "%Y-%m-%dT%H:%M:%S.%f%z"
     )
 
@@ -198,36 +194,6 @@ def org_with_extras_to_csv(org):
     return fd.getvalue()
 
 
-def schema_to_csv(typ, schema_key, objects):
-    # we must make sure everything we put into the writer has been encoded
-    schema = scheming_get_dataset_schema(typ)
-    if schema is None:
-        # some objects may not have a ckanext-scheming schema
-        return ""
-    fd = BytesIO()
-
-    # Write the Byte Order Mark to signal to Excel that this CSV is in UTF-8
-    fd.write(codecs.BOM_UTF8)
-
-    if sys.version_info >= (3, 0):
-        t = TextIOWrapper(fd, write_through = True, encoding='utf-8')
-        w = csv.writer(t)
-    else:
-        w = csv.writer(fd)
-
-    header = []
-    field_names = []
-    for field in schema[schema_key]:
-        field_names.append(field["field_name"])
-        header.append(choose_header_label(typ, schema_key, field))
-    w.writerow(header)
-    for obj in sorted(objects, key=lambda p: p["name"]):
-        w.writerow(
-            [encode_field(obj.get(field_name, "")) for field_name in field_names]
-        )
-    return fd.getvalue()
-
-
 def encode_field(field_name):
     # fix for AttributeError: 'int' object has no attribute 'encode'
     if isinstance(field_name, (int, float)):
@@ -241,7 +207,6 @@ def encode_field(field_name):
 def generate_bulk_zip(
     pfx,
     title,
-    user,
     organizations,
     packages,
     resources,
@@ -251,13 +216,6 @@ def generate_bulk_zip(
 ):
     user_page = None
     username = ""
-    site_url = config.get("ckan.site_url").rstrip("/")
-    if user:
-        user_page = "%s%s" % (
-            site_url,
-            h.url_for("user.read", id=user.name),
-        )
-        username = user.name
 
     def ip(s):
         return pfx + "/" + s
@@ -285,7 +243,7 @@ def generate_bulk_zip(
     package_count = len(packages)
     organization_count = len(organizations)
 
-    md5_attribute = config.get("ckanext.bulk.md5_attribute", "md5")
+    md5_attribute = "md5"
     for resource in sorted(resources, key=lambda r: r["url"]):
         url = resource["url"]
         urls.append(resource["url"])
@@ -296,11 +254,6 @@ def generate_bulk_zip(
         if md5_attribute in resource:
             filename = urlparse(url).path.split("/")[-1]
             md5sums.append((resource[md5_attribute], filename))
-
-    headers = {
-        "Content-Type": "application/zip",
-        "Content-Disposition": str('attachment; filename="%s.zip"' % pfx),
-    }
 
     fd = BytesIO()
     zf = ZipFile(fd, mode="w", compression=ZIP_DEFLATED)
@@ -335,26 +288,6 @@ def generate_bulk_zip(
             org_with_extras_to_csv(org),
         )
 
-    for typ, typ_packages in list(objects_by_attr(packages, "type", "unknown").items()):
-        # some objects may not have a ckanext-scheming schema
-        if typ is None:
-            continue
-        zf.writestr(
-            ip("package_metadata/package_metadata_{}_{}.csv".format(pfx, typ)),
-            schema_to_csv(typ, "dataset_fields", typ_packages),
-        )
-
-    for typ, typ_resources in list(objects_by_attr(
-        resources, "resource_type", "unknown"
-    ).items()):
-        # some objects may not have a ckanext-scheming schema
-        if typ is None:
-            continue
-        zf.writestr(
-            ip("resource_metadata/resource_metadata_{}_{}.csv".format(pfx, typ)),
-            schema_to_csv(typ, "resource_fields", typ_resources),
-        )
-
     write_script("download.sh", SH_TEMPLATE)
     write_script("download.ps1", POWERSHELL_TEMPLATE)
     write_script("download.py", PY_TEMPLATE)
@@ -382,5 +315,4 @@ def generate_bulk_zip(
     )
 
     zf.close()
-    content = fd.getvalue()
-    return make_response((content, 200, headers))
+    return fd.getvalue()
