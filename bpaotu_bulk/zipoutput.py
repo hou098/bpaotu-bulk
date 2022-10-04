@@ -1,13 +1,10 @@
 import jinja2
 import sys
 import datetime
-import codecs
-import csv
 import bitmath
-from collections import defaultdict
 from urllib.parse import urlparse
 from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
-from io import BytesIO, TextIOWrapper
+from io import BytesIO
 from .bash import SH_TEMPLATE
 from .powershell import POWERSHELL_TEMPLATE
 from .python import PY_TEMPLATE
@@ -19,7 +16,6 @@ CKAN Bulk Download
 {title} {prefix}
 
 Bulk download package generated: {timestamp}
-Number of Organizations        : {organization_count}
 Number of Packages             : {package_count}
 Number of Resources            : {resource_count}
 Total Space required           : {total_size}
@@ -55,20 +51,6 @@ export CKAN_API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 On Microsoft Windows, within Powershell, use:
 $env:CKAN_API_KEY="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
-
-organization_metadata folder:
-Contains metadata spreadsheets as CSV for all organizations owning the
-selected data resources (files).
-
-package_metadata folder:
-Contains metadata spreadsheets as CSV for all selected data packages, grouped
-by the type of package (schema). Each data package will contain one or more
-resources. This metadata is an amalgamation of all metadata, including
-sample contextual metadata and processing metadata.
-
-resource_metadata folder:
-Contains metadata spreadsheets as CSV for all selected data resources (files).
-
 QUERY.txt:
 Text file which contains metadata about the download results and the original
 query
@@ -92,40 +74,11 @@ QueryURL           : {query_url}
 Download URL       : {download_url}
 URL Count          : {url_count}
 MD5 Sum Count      : {md5_count}
-Organization Count : {organization_count}
 Package Count      : {package_count}
 Resource Count     : {resource_count}
 Total Space        : {total_size}
 Total Bytes        : {total_size_bytes}
 """
-
-amd_data_types = [
-    "base-genomics-amplicon",
-    "base-genomics-amplicon-control",
-    "base-metagenomics",
-    "base-site-image",
-    "mm-genomics-amplicon",
-    "mm-genomics-amplicon-control",
-    "mm-metagenomics",
-    "mm-metatranscriptome",
-    "amdb-metagenomics-novaseq",
-    "amdb-metagenomics-novaseq-control",
-    "amdb-genomics-amplicon",
-    "amdb-genomics-amplicon-control",
-]
-
-# these are labels that should always be included over their corresponding 'less descriptive' field_name
-mandatory_field_labels = [
-    "Organization",
-    "Title",
-    "Description",
-    "URL",
-    "Tags",
-    "Geospatial Coverage",
-    "License",
-    "Resource Permissions",
-]
-
 
 def str_crlf(s):
     """
@@ -140,82 +93,18 @@ def get_timestamp():
     )
 
 
-def objects_by_attr(objects, attr, default):
-    by_attr = defaultdict(list)
-    for obj in objects:
-        by_attr[obj.get(attr, default)].append(obj)
-    return by_attr
-
-
-def debug(s):
-    sys.stderr.write(repr(s))
-    sys.stderr.write("\n")
-    sys.stderr.flush()
-
-
-def choose_header_label(typ, schema_key, field):
-    field_label = field["label"].encode("utf8")
-    if (
-        schema_key == "dataset_fields"
-        and typ in amd_data_types
-        and field_label not in mandatory_field_labels
-    ):
-        return field["field_name"]
-    else:
-        return field_label
-
-
-def org_with_extras_to_csv(org):
-    # we must make sure everything we put into the writer has been encoded
-    fd = BytesIO()
-
-    # Write the Byte Order Mark to signal to Excel that this CSV is in UTF-8
-    fd.write(codecs.BOM_UTF8)
-
-    if sys.version_info >= (3, 0):
-        t = TextIOWrapper(fd, write_through = True, encoding='utf-8')
-        w = csv.writer(t)
-    else:
-        w = csv.writer(fd)
-
-    header = []
-    field_names = ["key", "value"]
-    header.append("Field")
-    header.append("Value")
-    w.writerow(header)
-
-    w.writerow(["name", encode_field(org["name"])])
-    w.writerow(["display_name", encode_field(org["display_name"])])
-    for extra in org["extras"]:
-        if extra["state"] == "active" or extra["state"] is None:
-            w.writerow(
-                [encode_field(extra.get(field_name, "")) for field_name in field_names]
-            )
-    return fd.getvalue()
-
-
-def encode_field(field_name):
-    # fix for AttributeError: 'int' object has no attribute 'encode'
-    if isinstance(field_name, (int, float)):
-        field_name = str(field_name)
-    if sys.version_info >= (3, 0) and isinstance(field_name, str):
-        return field_name
-    else:
-        return field_name.encode("utf8")
-
 
 def generate_bulk_zip(
-    pfx,
-    title,
-    organizations,
-    packages,
-    resources,
-    query=None,
-    query_url=None,
-    download_url=None,
-):
-    user_page = None
-    username = ""
+        pfx,
+        title,
+        username,
+        user_page,
+        packages,
+        resources,
+        query=None,
+        query_url=None,
+        download_url=None,
+        md5_attribute="md5"):
 
     def ip(s):
         return pfx + "/" + s
@@ -241,9 +130,7 @@ def generate_bulk_zip(
     total_size_bytes = 0
     resource_count = len(resources)
     package_count = len(packages)
-    organization_count = len(organizations)
 
-    md5_attribute = "md5"
     for resource in sorted(resources, key=lambda r: r["url"]):
         url = resource["url"]
         urls.append(resource["url"])
@@ -266,7 +153,6 @@ def generate_bulk_zip(
                 title=title,
                 user_page=user_page,
                 total_size=bitmath.Byte(bytes=total_size_bytes).best_prefix(),
-                organization_count=organization_count,
                 resource_count=resource_count,
                 package_count=package_count,
                 total_size_bytes=total_size_bytes,
@@ -279,14 +165,6 @@ def generate_bulk_zip(
 
     zf.writestr(ip(urls_fname), "\n".join(urls) + "\n")
     zf.writestr(ip(md5sum_fname), "\n".join("%s  %s" % t for t in md5sums) + "\n")
-
-    for org in organizations:
-        zf.writestr(
-            ip(
-                "organization_metadata/organization_metadata_{}.csv".format(org["name"])
-            ),
-            org_with_extras_to_csv(org),
-        )
 
     write_script("download.sh", SH_TEMPLATE)
     write_script("download.ps1", POWERSHELL_TEMPLATE)
@@ -305,7 +183,6 @@ def generate_bulk_zip(
                 query=query,
                 query_url=query_url,
                 download_url=download_url,
-                organization_count=organization_count,
                 package_count=package_count,
                 resource_count=resource_count,
                 total_size=bitmath.Byte(bytes=total_size_bytes).best_prefix(),

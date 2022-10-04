@@ -31,14 +31,9 @@ if [ x"$CKAN_API_KEY" = "x" ]; then
 fi
 {% endif %}
 
-# Check we are being run from a suitable location
-
-if [ ! -f {{ urls_fname }} ]; then
-  echo "{{ urls_fname }} not found"
-  echo
-  echo "Please change to the directory containing the download.sh script"
-  exit 1
-fi
+# Download into the directory containing this script otherwise curl might
+# # clobber existing files.
+cd "$(dirname "$0")" || exit 1
 
 # Check for required programs
 
@@ -130,4 +125,5 @@ done < {{ urls_fname }}
 
 echo "Data download complete. Verifying checksums:"
 md5sum -c {{ md5sum_fname }} 2>&1 | tee tmp/md5sum.log
+echo Files downloaded into $PWD
 """

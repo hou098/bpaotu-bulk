@@ -6,3 +6,5 @@ https://ckan.org/ )
 It generates a ZIP file containing scripts to download files.
 
 Adapted from https://github.com/BioplatformsAustralia/ckanext-bulk
+
+See https://github.com/BioplatformsAustralia/bpaotu/issues/243
